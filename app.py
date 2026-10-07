@@ -1,4 +1,4 @@
-""AI Resume ATS Checker - Streamlit app powered by Google Gemini Flash."""
+"""AI Resume ATS Checker - Streamlit app powered by Google Gemini Flash."""
  
 import io
 import json
