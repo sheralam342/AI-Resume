@@ -1,24 +1,24 @@
 """AI Resume ATS Checker - Streamlit app powered by Google Gemini Flash."""
- 
+
 import io
 import json
 import os
 import re
- 
+
 import streamlit as st
 from docx import Document
 from google import genai
 from google.genai import types
 from pypdf import PdfReader
- 
+
 DEFAULT_MODEL = "gemini-3.8-flash"  # editable in the sidebar if Google renames/retires it
 MAX_RESUME_CHARS = 20000
 MIN_RESUME_CHARS = 150
- 
+
 PROMPT_TEMPLATE = """You are an expert ATS (Applicant Tracking System) analyst and professional resume reviewer.
- 
+
 Analyze the resume below and return ONLY a valid JSON object (no markdown, no commentary) with exactly this schema:
- 
+
 {{
   "overall_score": <integer 0-100>,
   "summary": "<2-3 sentence overall assessment>",
@@ -45,7 +45,7 @@ Analyze the resume below and return ONLY a valid JSON object (no markdown, no co
     }}
   ]
 }}
- 
+
 Scoring guidance:
 - Be realistic and strict. 90+ is rare. Most resumes score between 45 and 80.
 - Consider: standard section headings, contact info, consistent dates, quantified achievements,
@@ -58,13 +58,13 @@ RESUME TEXT:
 {resume_text}
 \"\"\"
 """
- 
+
 JD_INSTRUCTIONS = (
     "- A job description is provided. Score keyword match and relevance against it, and make "
     "missing_keywords reflect terms from the job description that the resume lacks."
 )
- 
- 
+
+
 # --------------------------------------------------------------------------- #
 # File parsing
 # --------------------------------------------------------------------------- #
@@ -79,8 +79,8 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
             raise ValueError("This PDF is password protected. Please upload an unlocked copy.")
     pages = [(page.extract_text() or "") for page in reader.pages]
     return "\n".join(pages).strip()
- 
- 
+
+
 def extract_text_from_docx(file_bytes: bytes) -> str:
     doc = Document(io.BytesIO(file_bytes))
     parts = [p.text for p in doc.paragraphs if p.text.strip()]
@@ -90,8 +90,8 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
             if cells:
                 parts.append(" | ".join(cells))
     return "\n".join(parts).strip()
- 
- 
+
+
 def extract_resume_text(filename: str, file_bytes: bytes) -> str:
     name = filename.lower()
     if name.endswith(".pdf"):
@@ -103,8 +103,8 @@ def extract_resume_text(filename: str, file_bytes: bytes) -> str:
     else:
         raise ValueError("Unsupported file type. Please upload a PDF, DOCX or TXT file.")
     return re.sub(r"\n{3,}", "\n\n", text)
- 
- 
+
+
 # --------------------------------------------------------------------------- #
 # Gemini
 # --------------------------------------------------------------------------- #
@@ -114,8 +114,8 @@ def get_api_key() -> str:
     except Exception:
         key = ""
     return key or os.getenv("GEMINI_API_KEY", "")
- 
- 
+
+
 def parse_json_response(raw: str) -> dict:
     """Parse model output into a dict, tolerating markdown fences or stray text."""
     if not raw:
@@ -130,15 +130,15 @@ def parse_json_response(raw: str) -> dict:
         if start != -1 and end > start:
             return json.loads(cleaned[start : end + 1])
         raise ValueError("Could not parse the model response as JSON.")
- 
- 
+
+
 def _clamp_score(value) -> int:
     try:
         return max(0, min(100, int(round(float(value)))))
     except (TypeError, ValueError):
         return 0
- 
- 
+
+
 def normalize_result(data: dict) -> dict:
     """Make sure every field the UI needs exists with a sane type."""
     sections = data.get("section_scores") or {}
@@ -163,8 +163,8 @@ def normalize_result(data: dict) -> dict:
             if isinstance(r, dict)
         ],
     }
- 
- 
+
+
 def analyze_resume(resume_text: str, job_description: str, api_key: str, model: str) -> dict:
     jd = job_description.strip()
     prompt = PROMPT_TEMPLATE.format(
@@ -182,8 +182,8 @@ def analyze_resume(resume_text: str, job_description: str, api_key: str, model: 
         ),
     )
     return normalize_result(parse_json_response(response.text))
- 
- 
+
+
 # --------------------------------------------------------------------------- #
 # UI helpers
 # --------------------------------------------------------------------------- #
@@ -195,12 +195,12 @@ def score_label(score: int) -> str:
     if score >= 50:
         return "Needs work"
     return "Poor"
- 
- 
+
+
 def pretty(name: str) -> str:
     return name.replace("_", " ").title()
- 
- 
+
+
 def render_results(result: dict) -> None:
     score = result["overall_score"]
     left, right = st.columns([1, 3])
@@ -209,19 +209,19 @@ def render_results(result: dict) -> None:
         st.progress(score / 100)
         if result["summary"]:
             st.write(result["summary"])
- 
+
     if result["section_scores"]:
         st.subheader("Score breakdown")
         cols = st.columns(len(result["section_scores"]))
         for col, (name, value) in zip(cols, result["section_scores"].items()):
             col.metric(pretty(name), f"{value}")
             col.progress(value / 100)
- 
+
     if result["strengths"]:
         st.subheader("Strengths")
         for s in result["strengths"]:
             st.markdown(f"- {s}")
- 
+
     if result["improvements"]:
         st.subheader("Improvements")
         order = {"High": 0, "Medium": 1, "Low": 2}
@@ -229,19 +229,19 @@ def render_results(result: dict) -> None:
         for item in sorted(result["improvements"], key=lambda i: order.get(i["priority"], 1)):
             with st.expander(f"{icons.get(item['priority'], '🟠')} {item['priority']}: {item['issue']}"):
                 st.write(item["suggestion"])
- 
+
     if result["missing_keywords"]:
         st.subheader("Keywords to consider adding")
         st.write("  ".join(f"`{k}`" for k in result["missing_keywords"]))
- 
+
     if result["rewrite_examples"]:
         st.subheader("Sample rewrites")
         for ex in result["rewrite_examples"]:
             st.markdown(f"**Before:** {ex['original']}")
             st.markdown(f"**After:** {ex['improved']}")
             st.divider()
- 
- 
+
+
 # --------------------------------------------------------------------------- #
 # App
 # --------------------------------------------------------------------------- #
@@ -249,7 +249,7 @@ def main() -> None:
     st.set_page_config(page_title="AI Resume ATS Checker", page_icon="📄", layout="wide")
     st.title("📄 AI Resume ATS Checker")
     st.caption("Upload your resume to get an estimated ATS score and concrete ways to improve it.")
- 
+
     api_key = get_api_key()
     with st.sidebar:
         st.header("Settings")
@@ -262,14 +262,14 @@ def main() -> None:
             "The score is an AI-based estimate, not the output of a real ATS. "
             "Use it as guidance for improving your resume."
         )
- 
+
     uploaded = st.file_uploader("Upload your resume", type=["pdf", "docx", "txt"])
     job_description = st.text_area(
         "Job description (optional, for a tailored score)",
         height=150,
         placeholder="Paste the job description here to check keyword match...",
     )
- 
+
     if st.button("Analyze resume", type="primary", disabled=uploaded is None):
         if not api_key:
             st.error("Please provide a Gemini API key in the sidebar or app secrets.")
@@ -291,10 +291,10 @@ def main() -> None:
         except Exception as e:
             st.error(f"Something went wrong while analyzing your resume: {e}")
             return
- 
+
     if "result" in st.session_state:
         render_results(st.session_state["result"])
- 
- 
+
+
 if __name__ == "__main__":
     main()
