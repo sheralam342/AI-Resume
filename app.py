@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import time
 
 import streamlit as st
 from docx import Document
@@ -12,6 +13,16 @@ from google.genai import types
 from pypdf import PdfReader
 
 DEFAULT_MODEL = "gemini-3.8-flash"  # editable in the sidebar if Google renames/retires it
+# Tried in order if the selected model is overloaded or unavailable.
+FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash"]
+MAX_ATTEMPTS = 3  # tries per model; waits 2s, then 4s between tries
+RETRYABLE_MARKERS = (
+    "503", "unavailable", "high demand", "overloaded",
+    "429", "resource_exhausted", "rate limit", "quota",
+    "500", "internal", "504", "deadline", "timed out", "timeout",
+    "connection", "temporarily",
+)
+MODEL_PROBLEM_MARKERS = ("404", "not_found", "not found", "not supported", "no longer available")
 MAX_RESUME_CHARS = 20000
 MIN_RESUME_CHARS = 150
 
@@ -173,15 +184,34 @@ def analyze_resume(resume_text: str, job_description: str, api_key: str, model: 
         resume_text=resume_text[:MAX_RESUME_CHARS],
     )
     client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model=model,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.2,
-            response_mime_type="application/json",
-        ),
+    config = types.GenerateContentConfig(
+        temperature=0.2,
+        response_mime_type="application/json",
     )
-    return normalize_result(parse_json_response(response.text))
+
+    models = [model] + [m for m in FALLBACK_MODELS if m != model]
+    last_error = None
+    for name in models:
+        for attempt in range(MAX_ATTEMPTS):
+            try:
+                response = client.models.generate_content(model=name, contents=prompt, config=config)
+                return normalize_result(parse_json_response(response.text))
+            except ValueError as e:  # empty or malformed JSON: just try again
+                last_error = e
+            except Exception as e:
+                last_error = e
+                text = str(e).lower()
+                if any(m in text for m in MODEL_PROBLEM_MARKERS):
+                    break  # this model name is not usable, go to the next one
+                if not any(m in text for m in RETRYABLE_MARKERS):
+                    raise  # e.g. invalid API key: retrying will not help
+            if attempt < MAX_ATTEMPTS - 1:
+                time.sleep(2 ** (attempt + 1))
+
+    raise RuntimeError(
+        "Gemini is overloaded or unavailable right now. Please wait a minute and click "
+        f"Analyze again. (Last error: {last_error})"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -285,7 +315,7 @@ def main() -> None:
                 return
             with st.spinner("Analyzing with Gemini..."):
                 st.session_state["result"] = analyze_resume(text, job_description, api_key, model)
-        except ValueError as e:
+        except (ValueError, RuntimeError) as e:
             st.error(str(e))
             return
         except Exception as e:
